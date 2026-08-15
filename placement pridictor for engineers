@@ -1,0 +1,599 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+# ------------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------------
+st.set_page_config(
+    page_title="placement predictor for engineers",
+    page_icon=":material/school:",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ------------------------------------------------------------
+# SESSION STATE
+# ------------------------------------------------------------
+defaults = {
+    "logged_in": False,
+    "username": "",
+    "page": "Home",
+    "history": [],
+    "student": {},
+    "prediction": None,
+    "chat": [
+        {
+            "role": "assistant",
+            "content": "Hi! 👋 I am your AI Placement Assistant. I can ask questions about your technical skills, communication, projects and interview readiness."
+        }
+    ],
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+# ------------------------------------------------------------
+# DEMO ML MODEL
+# NOTE: Replace this generated training data with your real
+# college/student placement dataset before final submission.
+# ------------------------------------------------------------
+FEATURES = [
+    "cgpa",
+    "tenth",
+    "twelfth",
+    "backlogs",
+    "coding",
+    "communication",
+    "aptitude",
+    "projects",
+    "internship",
+    "certifications",
+]
+
+@st.cache_resource
+def train_demo_model():
+    rng = np.random.default_rng(42)
+    n = 1200
+
+    cgpa = rng.uniform(4.5, 10.0, n)
+    tenth = rng.uniform(45, 100, n)
+    twelfth = rng.uniform(45, 100, n)
+    backlogs = rng.integers(0, 5, n)
+    coding = rng.integers(1, 11, n)
+    communication = rng.integers(1, 11, n)
+    aptitude = rng.integers(1, 11, n)
+    projects = rng.integers(0, 6, n)
+    internship = rng.integers(0, 2, n)
+    certifications = rng.integers(0, 7, n)
+
+    score = (
+        0.30 * cgpa
+        + 0.08 * (tenth / 10)
+        + 0.08 * (twelfth / 10)
+        - 0.10 * backlogs
+        + 0.12 * coding
+        + 0.10 * communication
+        + 0.09 * aptitude
+        + 0.06 * projects
+        + 0.05 * internship
+        + 0.02 * certifications
+    )
+
+    threshold = np.median(score)
+    y = (score >= threshold).astype(int)
+
+    X = pd.DataFrame({
+        "cgpa": cgpa,
+        "tenth": tenth,
+        "twelfth": twelfth,
+        "backlogs": backlogs,
+        "coding": coding,
+        "communication": communication,
+        "aptitude": aptitude,
+        "projects": projects,
+        "internship": internship,
+        "certifications": certifications,
+    })
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.20, random_state=42, stratify=y
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=250,
+        random_state=42,
+        max_depth=8,
+        class_weight="balanced",
+    )
+    model.fit(X_train, y_train)
+    accuracy = accuracy_score(y_test, model.predict(X_test))
+    return model, accuracy
+
+model, model_accuracy = train_demo_model()
+
+# ------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------
+def placement_label(probability):
+    if probability >= 75:
+        return "HIGH", "🟢"
+    if probability >= 50:
+        return "MEDIUM", "🟡"
+    return "LOW", "🔴"
+
+def calculate_ai_score():
+    answers = st.session_state.get("ai_scores", {})
+    if not answers:
+        return 50
+    return round(float(np.mean(list(answers.values()))), 1)
+
+def make_pdf(student, prediction, suggestions, ai_score):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=36, leftMargin=36,
+                            topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("AI Student Placement Prediction Report", styles["Title"]))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(
+        f"Generated on: {datetime.now().strftime('%d %B %Y, %I:%M %p')}",
+        styles["Normal"]
+    ))
+    story.append(Spacer(1, 15))
+
+    data = [
+        ["Student", str(student.get("name", ""))],
+        ["Branch", str(student.get("branch", ""))],
+        ["College", str(student.get("college", ""))],
+        ["CGPA", str(student.get("cgpa", ""))],
+        ["10th %", str(student.get("tenth", ""))],
+        ["12th %", str(student.get("twelfth", ""))],
+        ["Backlogs", str(student.get("backlogs", ""))],
+        ["Coding", f"{student.get('coding', '')}/10"],
+        ["Communication", f"{student.get('communication', '')}/10"],
+        ["Aptitude", f"{student.get('aptitude', '')}/10"],
+        ["Projects", str(student.get("projects", ""))],
+        ["Internship", "Yes" if student.get("internship") else "No"],
+        ["Certifications", str(student.get("certifications", ""))],
+        ["AI Readiness Score", f"{ai_score}/100"],
+        ["Placement Probability", f"{prediction['probability']}%"],
+        ["Prediction", prediction["label"]],
+    ]
+
+    table = Table(data, colWidths=[180, 300])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("PADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 18))
+
+    story.append(Paragraph("Personalized Suggestions", styles["Heading2"]))
+    for item in suggestions:
+        story.append(Paragraph("• " + item, styles["Normal"]))
+        story.append(Spacer(1, 5))
+
+    story.append(Spacer(1, 15))
+    story.append(Paragraph(
+        "Note: This report is an educational prediction/assessment and does not guarantee actual placement.",
+        styles["Italic"]
+    ))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+def get_suggestions(student, probability, ai_score):
+    suggestions = []
+
+    if student["cgpa"] < 7:
+        suggestions.append("Try to improve your CGPA because academic performance can affect eligibility for some companies.")
+    if student["coding"] < 7:
+        suggestions.append("Improve programming fundamentals and practice coding problems regularly.")
+    if student["communication"] < 7:
+        suggestions.append("Practice speaking, self-introduction and mock HR interviews.")
+    if student["aptitude"] < 7:
+        suggestions.append("Practice quantitative aptitude, logical reasoning and verbal questions.")
+    if student["projects"] < 2:
+        suggestions.append("Build at least 2 strong projects and be ready to explain your contribution.")
+    if not student["internship"]:
+        suggestions.append("Try to gain practical experience through an internship, training or real-world project.")
+    if student["backlogs"] > 0:
+        suggestions.append("Clear pending backlogs and check company eligibility criteria.")
+    if student["certifications"] < 2:
+        suggestions.append("Consider completing relevant certifications in your target technology.")
+    if ai_score < 70:
+        suggestions.append("Complete the AI interview assessment again after improving technical and communication skills.")
+
+    if not suggestions:
+        suggestions.append("Your profile is balanced. Continue practicing coding, aptitude and mock interviews.")
+
+    if probability >= 75:
+        suggestions.append("Your overall readiness is strong. Focus on company-specific preparation and interview practice.")
+    elif probability >= 50:
+        suggestions.append("Your profile has moderate readiness. Work on the weak areas above before placement season.")
+    else:
+        suggestions.append("Focus on your fundamentals first and retake the assessment after making improvements.")
+
+    return suggestions
+
+def chatbot_reply(message):
+    text = message.lower()
+
+    if any(x in text for x in ["hello", "hi", "hey"]):
+        return "Hello! 👋 Tell me about your skills, projects or placement preparation."
+
+    if "python" in text or "java" in text or "c++" in text:
+        return "Good! Programming is important for technical placements. Tell me your programming level from 1 to 10 and one project you made."
+
+    if "interview" in text:
+        return "For interviews, prepare your self-introduction, projects, OOP, DBMS, SQL, DSA basics and common HR questions."
+
+    if "dsa" in text or "data structure" in text:
+        return "Start with arrays, strings, linked lists, stacks, queues, searching, sorting, trees and basic time complexity."
+
+    if "communication" in text:
+        return "Practice speaking for 5–10 minutes daily. Record yourself answering 'Tell me about yourself' and improve clarity and confidence."
+
+    if "project" in text:
+        return "A strong project should have a clear problem, dataset, technology, implementation, result and your personal contribution."
+
+    if "placement" in text or "job" in text:
+        return "Placement readiness depends on academics, technical skills, aptitude, communication, projects, internships and interview performance."
+
+    if "cgpa" in text:
+        return "A good CGPA helps with eligibility, but practical skills, projects, coding and communication are also important."
+
+    return "I understand. 👍 Try telling me about your technical skills, project experience, coding level or interview preparation, and I will guide you."
+
+# ------------------------------------------------------------
+# LOGIN
+# ------------------------------------------------------------
+if not st.session_state.logged_in:
+    st.markdown("# 🎓  Placement Predictor for engineers")
+    st.caption("AI-powered placement readiness and prediction platform")
+
+    left, right = st.columns([1.2, 1])
+    with left:
+        st.markdown("## Welcome 👋")
+        st.write(
+            "Predict placement readiness using student information and an AI-based assessment. "
+            "This demo also stores prediction history during the current session."
+        )
+        st.info("Demo login: enter any name and password to continue.")
+
+    with right:
+        with st.form("login_form"):
+            name = st.text_input("👤 Student Name")
+            email = st.text_input("📧 Email")
+            password = st.text_input("🔐 Password", type="password")
+            submitted = st.form_submit_button("Login", use_container_width=True)
+
+            if submitted:
+                if name.strip() and email.strip() and password.strip():
+                    st.session_state.logged_in = True
+                    st.session_state.username = name.strip()
+                    st.session_state.page = "Home"
+                    st.rerun()
+                else:
+                    st.error("Please fill all login fields.")
+
+    st.stop()
+
+# ------------------------------------------------------------
+# HEADER
+# ------------------------------------------------------------
+top1, top2 = st.columns([7, 1.5])
+with top1:
+    st.title("🎓 Placement Predictor for engineers ")
+    st.caption(f"Welcome, {st.session_state.username} 👋")
+with top2:
+    if st.button("👤 Profile", use_container_width=True):
+        st.session_state.page = "Profile"
+
+# ------------------------------------------------------------
+# SIDEBAR / NAVIGATION
+# ------------------------------------------------------------
+with st.sidebar:
+    st.header("Navigation")
+    pages = ["Home", "Student Details", "Prediction", "Result & Suggestions", "History", "Profile"]
+    selected = st.radio("Go to", pages, index=pages.index(st.session_state.page))
+    st.session_state.page = selected
+
+    st.divider()
+    st.caption(f"Demo model accuracy: {model_accuracy * 100:.1f}%")
+    if st.button("Logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.rerun()
+
+# ------------------------------------------------------------
+# HOME
+# ------------------------------------------------------------
+if st.session_state.page == "Home":
+    st.markdown("## 🏠 Home")
+    a, b, c = st.columns(3)
+    with a:
+        st.metric("Prediction Records", len(st.session_state.history))
+    with b:
+        latest = st.session_state.prediction["probability"] if st.session_state.prediction else 0
+        st.metric("Latest Probability", f"{latest}%")
+    with c:
+        st.metric("AI Model", "Random Forest")
+
+    st.divider()
+    st.markdown("### 🚀 How the system works")
+    steps = [
+        ("1", "Student Details", "Enter academic, technical and profile information."),
+        ("2", "AI Assessment", "Chat with the AI assistant to assess readiness."),
+        ("3", "ML Prediction", "The machine-learning model estimates placement probability."),
+        ("4", "Result & Suggestions", "View strengths, weak areas and personalized suggestions."),
+        ("5", "Download Report", "Download a PDF report for your records."),
+    ]
+    for n, title, desc in steps:
+        st.markdown(f"**{n}. {title}** — {desc}")
+
+    st.divider()
+    if st.button("📝 Start Placement Assessment", type="primary", use_container_width=True):
+        st.session_state.page = "Student Details"
+        st.rerun()
+
+# ------------------------------------------------------------
+# STUDENT DETAILS
+# ------------------------------------------------------------
+elif st.session_state.page == "Student Details":
+    st.markdown("## 📝 Student Details")
+    with st.form("student_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            name = st.text_input("Full Name", value=st.session_state.student.get("name", st.session_state.username))
+            college = st.text_input("College Name", value=st.session_state.student.get("college", ""))
+            branch = st.text_input("Branch", value=st.session_state.student.get("branch", ""))
+            cgpa = st.number_input("CGPA", 0.0, 10.0, float(st.session_state.student.get("cgpa", 7.0)), 0.1)
+            tenth = st.number_input("10th Percentage", 0.0, 100.0, float(st.session_state.student.get("tenth", 70.0)), 0.1)
+            twelfth = st.number_input("12th Percentage", 0.0, 100.0, float(st.session_state.student.get("twelfth", 70.0)), 0.1)
+
+        with c2:
+            backlogs = st.number_input("Backlogs", 0, 20, int(st.session_state.student.get("backlogs", 0)))
+            coding = st.slider("Coding Skill", 1, 10, int(st.session_state.student.get("coding", 6)))
+            communication = st.slider("Communication Skill", 1, 10, int(st.session_state.student.get("communication", 6)))
+            aptitude = st.slider("Aptitude Skill", 1, 10, int(st.session_state.student.get("aptitude", 6)))
+            projects = st.number_input("Number of Projects", 0, 20, int(st.session_state.student.get("projects", 1)))
+            internship = st.checkbox("Internship Experience", value=bool(st.session_state.student.get("internship", False)))
+            certifications = st.number_input("Certifications", 0, 30, int(st.session_state.student.get("certifications", 1)))
+
+        submitted = st.form_submit_button("💾 Save Student Details", type="primary", use_container_width=True)
+
+    if submitted:
+        st.session_state.student = {
+            "name": name,
+            "college": college,
+            "branch": branch,
+            "cgpa": cgpa,
+            "tenth": tenth,
+            "twelfth": twelfth,
+            "backlogs": backlogs,
+            "coding": coding,
+            "communication": communication,
+            "aptitude": aptitude,
+            "projects": projects,
+            "internship": internship,
+            "certifications": certifications,
+        }
+        st.success("Student details saved successfully.")
+        st.session_state.page = "Prediction"
+        st.rerun()
+
+# ------------------------------------------------------------
+# PREDICTION
+# ------------------------------------------------------------
+elif st.session_state.page == "Prediction":
+    st.markdown("## 🤖 Prediction & AI Assessment")
+
+    if not st.session_state.student:
+        st.warning("Please enter Student Details first.")
+        if st.button("Go to Student Details"):
+            st.session_state.page = "Student Details"
+            st.rerun()
+    else:
+        st.markdown("### 1. AI Placement Assistant")
+        st.info("Chat with the assistant below. Your conversation can be used as an additional readiness assessment.")
+
+        for msg in st.session_state.chat:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        user_msg = st.chat_input("Ask the AI assistant or answer its questions...")
+        if user_msg:
+            st.session_state.chat.append({"role": "user", "content": user_msg})
+            reply = chatbot_reply(user_msg)
+            st.session_state.chat.append({"role": "assistant", "content": reply})
+            st.rerun()
+
+        st.divider()
+        st.markdown("### 2. Quick AI Skill Assessment")
+
+        ai_cols = st.columns(4)
+        with ai_cols[0]:
+            ai_technical = st.slider("Technical Knowledge", 0, 100, 65)
+        with ai_cols[1]:
+            ai_problem = st.slider("Problem Solving", 0, 100, 65)
+        with ai_cols[2]:
+            ai_communication = st.slider("Communication", 0, 100, 65)
+        with ai_cols[3]:
+            ai_interview = st.slider("Interview Readiness", 0, 100, 60)
+
+        if st.button("🚀 Generate Placement Prediction", type="primary", use_container_width=True):
+            s = st.session_state.student
+            X = pd.DataFrame([{
+                "cgpa": s["cgpa"],
+                "tenth": s["tenth"],
+                "twelfth": s["twelfth"],
+                "backlogs": s["backlogs"],
+                "coding": s["coding"],
+                "communication": s["communication"],
+                "aptitude": s["aptitude"],
+                "projects": s["projects"],
+                "internship": int(s["internship"]),
+                "certifications": s["certifications"],
+            }])
+
+            ml_probability = float(model.predict_proba(X)[0][1] * 100)
+            ai_score = round(np.mean([
+                ai_technical, ai_problem, ai_communication, ai_interview
+            ]), 1)
+
+            # AI assessment has a limited influence on the final score.
+            final_probability = round((0.75 * ml_probability) + (0.25 * ai_score), 1)
+            label, icon = placement_label(final_probability)
+            suggestions = get_suggestions(s, final_probability, ai_score)
+
+            prediction = {
+                "probability": final_probability,
+                "label": f"{icon} {label}",
+                "ml_probability": round(ml_probability, 1),
+                "ai_score": ai_score,
+                "date": datetime.now().strftime("%d-%m-%Y %I:%M %p"),
+            }
+
+            st.session_state.prediction = prediction
+            st.session_state.ai_scores = {
+                "technical": ai_technical,
+                "problem": ai_problem,
+                "communication": ai_communication,
+                "interview": ai_interview,
+            }
+
+            st.session_state.history.insert(0, {
+                "date": prediction["date"],
+                "student": s["name"],
+                "probability": final_probability,
+                "prediction": label,
+            })
+
+            st.session_state.suggestions = suggestions
+            st.session_state.page = "Result & Suggestions"
+            st.rerun()
+
+# ------------------------------------------------------------
+# RESULT
+# ------------------------------------------------------------
+elif st.session_state.page == "Result & Suggestions":
+    st.markdown("## 📊 Result & Suggestions")
+
+    if not st.session_state.prediction:
+        st.warning("No prediction is available. Complete the assessment first.")
+        if st.button("Start Assessment"):
+            st.session_state.page = "Student Details"
+            st.rerun()
+    else:
+        p = st.session_state.prediction
+        s = st.session_state.student
+        ai_score = p["ai_score"]
+        suggestions = st.session_state.get("suggestions", [])
+
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            st.metric("Placement Probability", f"{p['probability']}%")
+        with r2:
+            st.metric("ML Score", f"{p['ml_probability']}%")
+        with r3:
+            st.metric("AI Readiness", f"{ai_score}%")
+
+        st.markdown(f"### Overall Prediction: {p['label']}")
+        st.progress(min(max(int(p["probability"]), 0), 100))
+
+        st.divider()
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("### 💪 Profile")
+            st.write(f"**Student:** {s['name']}")
+            st.write(f"**Branch:** {s['branch']}")
+            st.write(f"**CGPA:** {s['cgpa']}")
+            st.write(f"**Coding:** {s['coding']}/10")
+            st.write(f"**Communication:** {s['communication']}/10")
+            st.write(f"**Aptitude:** {s['aptitude']}/10")
+
+        with right:
+            st.markdown("### 💡 Personalized Suggestions")
+            for suggestion in suggestions:
+                st.write("• " + suggestion)
+
+        pdf = make_pdf(s, p, suggestions, ai_score)
+        st.download_button(
+            "⬇️ Download Placement Report",
+            data=pdf,
+            file_name=f"placement_report_{s['name'].replace(' ', '_')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+# ------------------------------------------------------------
+# HISTORY
+# ------------------------------------------------------------
+elif st.session_state.page == "History":
+    st.markdown("## 📜 Prediction History")
+
+    if not st.session_state.history:
+        st.info("No prediction history yet. Complete your first assessment.")
+    else:
+        df = pd.DataFrame(st.session_state.history)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        if st.button("🗑️ Clear History"):
+            st.session_state.history = []
+            st.rerun()
+
+# ------------------------------------------------------------
+# PROFILE
+# ------------------------------------------------------------
+elif st.session_state.page == "Profile":
+    st.markdown("## 👤 Profile")
+
+    s = st.session_state.student
+    st.write(f"**Name:** {st.session_state.username}")
+    st.write(f"**Email:** Demo account")
+    st.write(f"**College:** {s.get('college', 'Not added')}")
+    st.write(f"**Branch:** {s.get('branch', 'Not added')}")
+
+    st.divider()
+    st.markdown("### 📈 Latest Assessment")
+    if st.session_state.prediction:
+        st.metric("Placement Probability", f"{st.session_state.prediction['probability']}%")
+        st.metric("Prediction", st.session_state.prediction["label"])
+    else:
+        st.info("No assessment completed yet.")
+
+    st.divider()
+    st.caption(
+        "This is a college-project prototype. Replace the demo generated dataset "
+        "with a real, appropriately prepared placement dataset before final evaluation."
+    )
+
+# ------------------------------------------------------------
+# FLOATING-STYLE AI NOTE
+# ------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 2rem;}
+    div[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.25); padding: 12px; border-radius: 12px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
